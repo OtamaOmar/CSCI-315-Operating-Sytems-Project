@@ -46,3 +46,18 @@ You will need a RISC-V "newlib" tool chain from
 https://github.com/riscv/riscv-gnu-toolchain, and qemu compiled for
 riscv64-softmmu.  Once they are installed, and in your shell
 search path, you can run "make qemu".
+
+CHECKPOINT/RESTORE (PHASE 0 SPEC)
+
+System calls
+- int checkpoint(int pid, const char *path);
+- int restore(const char *path);
+
+Rules
+- pid == 0 means the current process.
+- path must be non-empty and no longer than MAXPATH.
+- checkpoint returns 0 on success, -1 on error.
+- restore returns the new pid on success, -1 on error.
+
+Status
+- Syscall plumbing is in place. Core checkpoint/restore logic will be implemented in later phases.

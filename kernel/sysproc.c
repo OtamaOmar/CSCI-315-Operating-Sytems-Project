@@ -105,3 +105,35 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_checkpoint(void)
+{
+  int pid;
+  int n;
+  char path[MAXPATH];
+
+  argint(0, &pid);
+  if(pid == 0)
+    pid = myproc()->pid;
+  if(pid < 0)
+    return -1;
+  n = argstr(1, path, MAXPATH);
+  if(n <= 1)
+    return -1;
+
+  return -1;
+}
+
+uint64
+sys_restore(void)
+{
+  int n;
+  char path[MAXPATH];
+
+  n = argstr(0, path, MAXPATH);
+  if(n <= 1)
+    return -1;
+
+  return -1;
+}
