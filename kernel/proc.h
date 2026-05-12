@@ -79,6 +79,8 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
+#define CKPT_MAX_PAGES 32
+
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
@@ -103,5 +105,12 @@ struct proc {
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
+
+  int checkpoint_valid;
+  uint64 checkpoint_sz;
+  struct trapframe checkpoint_tf;
+  char *checkpoint_pages[CKPT_MAX_PAGES];
+  int checkpoint_npages;
+
   char name[16];               // Process name (debugging)
 };

@@ -125,6 +125,13 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  p->checkpoint_valid = 0;
+  p->checkpoint_sz = 0;
+  p->checkpoint_npages = 0;
+
+  for(int i = 0; i < CKPT_MAX_PAGES; i++)
+    p->checkpoint_pages[i] = 0;
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -155,6 +162,17 @@ found:
 static void
 freeproc(struct proc *p)
 {
+  for(int i = 0; i < p->checkpoint_npages; i++){
+    if(p->checkpoint_pages[i]){
+      kfree(p->checkpoint_pages[i]);
+      p->checkpoint_pages[i] = 0;
+    }
+  }
+
+  p->checkpoint_valid = 0;
+  p->checkpoint_sz = 0;
+  p->checkpoint_npages = 0;
+
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;

@@ -112,17 +112,54 @@ sys_checkpoint(void)
   int pid;
   int n;
   char path[MAXPATH];
+  struct proc *p = myproc();
 
   argint(0, &pid);
   if(pid == 0)
-    pid = myproc()->pid;
-  if(pid < 0)
+    pid = p->pid;
+  if(pid < 0 || pid != p->pid)
     return -1;
+
   n = argstr(1, path, MAXPATH);
   if(n <= 1)
     return -1;
 
-  return -1;
+  int npages = (p->sz + PGSIZE - 1) / PGSIZE;
+  if(npages > CKPT_MAX_PAGES)
+    return -1;
+
+  for(int i = 0; i < p->checkpoint_npages; i++){
+    if(p->checkpoint_pages[i]){
+      kfree(p->checkpoint_pages[i]);
+      p->checkpoint_pages[i] = 0;
+    }
+  }
+
+  p->checkpoint_npages = npages;
+  p->checkpoint_sz = p->sz;
+  p->checkpoint_tf = *(p->trapframe);
+
+  for(int i = 0; i < npages; i++){
+    p->checkpoint_pages[i] = kalloc();
+    if(p->checkpoint_pages[i] == 0)
+      return -1;
+
+    memset(p->checkpoint_pages[i], 0, PGSIZE);
+
+    uint64 va = i * PGSIZE;
+    uint64 bytes = PGSIZE;
+
+    if(va + bytes > p->sz)
+      bytes = p->sz - va;
+
+    if(copyin(p->pagetable, p->checkpoint_pages[i], va, bytes) < 0)
+      return -1;
+  }
+
+  p->checkpoint_valid = 1;
+
+  printf("checkpoint saved for pid %d at %s\n", pid, path);
+  return 0;
 }
 
 uint64
@@ -130,10 +167,34 @@ sys_restore(void)
 {
   int n;
   char path[MAXPATH];
+  struct proc *p = myproc();
 
   n = argstr(0, path, MAXPATH);
   if(n <= 1)
     return -1;
 
-  return -1;
+  if(p->checkpoint_valid == 0)
+    return -1;
+
+  if(p->sz < p->checkpoint_sz){
+    if(growproc(p->checkpoint_sz - p->sz) < 0)
+      return -1;
+  }
+
+  for(int i = 0; i < p->checkpoint_npages; i++){
+    uint64 va = i * PGSIZE;
+    uint64 bytes = PGSIZE;
+
+    if(va + bytes > p->checkpoint_sz)
+      bytes = p->checkpoint_sz - va;
+
+    if(copyout(p->pagetable, va, p->checkpoint_pages[i], bytes) < 0)
+      return -1;
+  }
+
+  *(p->trapframe) = p->checkpoint_tf;
+  p->trapframe->a0 = 0;
+
+  printf("process restored from %s\n", path);
+  return 0;
 }
