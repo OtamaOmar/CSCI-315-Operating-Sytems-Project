@@ -1,4 +1,3 @@
-
 # To compile and run with a lab solution, set the lab name in conf/lab.mk
 # (e.g., LAB=util).  Run make grade to test solution with the lab's
 # grade script (e.g., grade-lab-util).
@@ -63,7 +62,6 @@ endif
 # perhaps in /opt/riscv/bin
 #TOOLPREFIX = 
 
-# Try to infer the correct TOOLPREFIX if not set
 ifndef TOOLPREFIX
 TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
 	then echo 'riscv64-unknown-elf-'; \
@@ -118,7 +116,6 @@ CFLAGS += -DKCSAN
 KCSANFLAG = -fsanitize=thread -fno-inline
 endif
 
-# Disable PIE when possible (for Ubuntu 16.10 toolchain)
 ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]no-pie'),)
 CFLAGS += -fno-pie -no-pie
 endif
@@ -161,18 +158,12 @@ $U/usys.o : $U/usys.S
 	$(CC) $(CFLAGS) -c -o $U/usys.o $U/usys.S
 
 $U/_forktest: $U/forktest.o $(ULIB)
-	# forktest has less library code linked in - needs to be small
-	# in order to be able to max out the proc table.
 	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $U/_forktest $U/forktest.o $U/ulib.o $U/usys.o
 	$(OBJDUMP) -S $U/_forktest > $U/forktest.asm
 
 mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 	gcc $(XCFLAGS) -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
 
-# Prevent deletion of intermediate files, e.g. cat.o, after first build, so
-# that disk image changes after first build are persistent until clean.  More
-# details:
-# http://www.gnu.org/software/make/manual/html_node/Chained-Rules.html
 .PRECIOUS: %.o
 
 UPROGS=\
@@ -195,6 +186,7 @@ UPROGS=\
 	$U/_logstress\
 	$U/_forphan\
 	$U/_dorphan\
+	$U/_checkpointtest\
 
 
 
@@ -305,9 +297,7 @@ clean:
         $U/usys.S \
 	$(UPROGS)
 
-# try to generate a unique GDB port
 GDBPORT = $(shell expr `id -u` % 5000 + 25000)
-# QEMU's gdb stub command line changed in 0.11
 QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
 	then echo "-gdb tcp::$(GDBPORT)"; \
 	else echo "-s -p $(GDBPORT)"; fi)
@@ -331,11 +321,9 @@ QEMUOPTS += -netdev user,id=net0,hostfwd=udp::$(FWDPORT1)-:2000,hostfwd=udp::$(F
 QEMUOPTS += -device e1000,netdev=net0,bus=pcie.0
 endif
 
-# makes a new fs.img
 qemu: check-qemu-version newfs.img $K/kernel fs.img
 	$(QEMU) $(QEMUOPTS)
 
-# runs with existing fs.img, if present
 qemu-fs: check-qemu-version $K/kernel fs.img
 	$(QEMU) $(QEMUOPTS)
 
@@ -347,14 +335,8 @@ qemu-gdb: $K/kernel .gdbinit fs.img
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
 
 ifeq ($(LAB),net)
-# try to generate a unique port for the echo server
 SERVERPORT = $(shell expr `id -u` % 5000 + 25099)
-
 endif
-
-##
-##  FOR testing lab grading script
-##
 
 ifneq ($(V),@)
 GRADEFLAGS += -v
@@ -368,10 +350,6 @@ grade:
 	@$(MAKE) clean || \
           (echo "'make clean' failed.  HINT: Do you have another running instance of xv6?" && exit 1)
 	./grade-lab-$(LAB) $(GRADEFLAGS)
-
-##
-## FOR submissions
-##
 
 submit-check:
 	@if ! test -d .git; then \

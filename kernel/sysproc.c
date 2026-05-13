@@ -193,8 +193,7 @@ sys_restore(void)
   }
 
   *(p->trapframe) = p->checkpoint_tf;
-  p->trapframe->a0 = 0;
 
   printf("process restored from %s\n", path);
-  return 0;
+  return 1;
 }
