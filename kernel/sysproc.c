@@ -52,9 +52,6 @@ sys_sbrk(void)
       return -1;
     }
   } else {
-    // Lazily allocate memory for this process: increase its memory
-    // size but don't allocate memory. If the processes uses the
-    // memory, vmfault() will allocate it.
     if(addr + n < addr)
       return -1;
     myproc()->sz += n;
@@ -93,8 +90,6 @@ sys_kill(void)
   return kkill(pid);
 }
 
-// return how many clock tick interrupts have occurred
-// since start.
 uint64
 sys_uptime(void)
 {
@@ -124,42 +119,21 @@ sys_checkpoint(void)
   if(n <= 1)
     return -1;
 
-  int npages = (p->sz + PGSIZE - 1) / PGSIZE;
-  if(npages > CKPT_MAX_PAGES)
+  extern struct proc proc[];
+  struct proc *p = 0;
+  for(struct proc *tp = proc; tp < &proc[NPROC]; tp++){
+    acquire(&tp->lock);
+    if(tp->pid == pid){
+      p = tp;
+      release(&tp->lock);
+      break;
+    }
+    release(&tp->lock);
+  }
+  if(p == 0)
     return -1;
 
-  for(int i = 0; i < p->checkpoint_npages; i++){
-    if(p->checkpoint_pages[i]){
-      kfree(p->checkpoint_pages[i]);
-      p->checkpoint_pages[i] = 0;
-    }
-  }
-
-  p->checkpoint_npages = npages;
-  p->checkpoint_sz = p->sz;
-  p->checkpoint_tf = *(p->trapframe);
-
-  for(int i = 0; i < npages; i++){
-    p->checkpoint_pages[i] = kalloc();
-    if(p->checkpoint_pages[i] == 0)
-      return -1;
-
-    memset(p->checkpoint_pages[i], 0, PGSIZE);
-
-    uint64 va = i * PGSIZE;
-    uint64 bytes = PGSIZE;
-
-    if(va + bytes > p->sz)
-      bytes = p->sz - va;
-
-    if(copyin(p->pagetable, p->checkpoint_pages[i], va, bytes) < 0)
-      return -1;
-  }
-
-  p->checkpoint_valid = 1;
-
-  printf("checkpoint saved for pid %d at %s\n", pid, path);
-  return 0;
+  return checkpoint_proc(p, path);
 }
 
 uint64
@@ -173,24 +147,8 @@ sys_restore(void)
   if(n <= 1)
     return -1;
 
-  if(p->checkpoint_valid == 0)
-    return -1;
-
-  if(p->sz < p->checkpoint_sz){
-    if(growproc(p->checkpoint_sz - p->sz) < 0)
-      return -1;
-  }
-
-  for(int i = 0; i < p->checkpoint_npages; i++){
-    uint64 va = i * PGSIZE;
-    uint64 bytes = PGSIZE;
-
-    if(va + bytes > p->checkpoint_sz)
-      bytes = p->checkpoint_sz - va;
-
-    if(copyout(p->pagetable, va, p->checkpoint_pages[i], bytes) < 0)
-      return -1;
-  }
+  return restore_proc(path);
+}
 
   *(p->trapframe) = p->checkpoint_tf;
 
