@@ -6,7 +6,9 @@
 #include "proc.h"
 #include "defs.h"
 #include "fs.h"
+#include "sleeplock.h"
 #include "stat.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -127,13 +129,6 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
-  p->checkpoint_valid = 0;
-  p->checkpoint_sz = 0;
-  p->checkpoint_npages = 0;
-
-  for(int i = 0; i < CKPT_MAX_PAGES; i++)
-    p->checkpoint_pages[i] = 0;
-
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -164,17 +159,6 @@ found:
 static void
 freeproc(struct proc *p)
 {
-  for(int i = 0; i < p->checkpoint_npages; i++){
-    if(p->checkpoint_pages[i]){
-      kfree(p->checkpoint_pages[i]);
-      p->checkpoint_pages[i] = 0;
-    }
-  }
-
-  p->checkpoint_valid = 0;
-  p->checkpoint_sz = 0;
-  p->checkpoint_npages = 0;
-
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
@@ -714,8 +698,13 @@ checkpoint_proc(struct proc *p, char *path)
 {
   struct inode *ip;
   struct ckpt_header hdr;
+  struct pipe *pipes[NOFILE];
+  int pipe_nrefs[NOFILE];
+  int pipe_read_refs[NOFILE];
+  int pipe_write_refs[NOFILE];
+  int npipes = 0;
   uint off = 0;
-  int i;
+  int i, j;
 
   begin_op();
   ip = create(path, T_FILE, 0, 0);
@@ -726,15 +715,26 @@ checkpoint_proc(struct proc *p, char *path)
 
   // Build and write header (M2)
   hdr.magic = CKPT_MAGIC;
+  hdr.version = CKPT_VERSION;
   hdr.pid   = p->pid;
   hdr.sz    = p->sz;
   memmove(&hdr.tf, p->trapframe, sizeof(struct trapframe));
+  safestrcpy(hdr.name, p->name, sizeof(hdr.name));
 
   // Capture FD table (M4 - FD/cwd/pipes)
   hdr.num_fds = 0;
   for(i = 0; i < NOFILE; i++){
+    hdr.fds[i].type = FD_NONE;
+    hdr.fds[i].readable = 0;
+    hdr.fds[i].writable = 0;
+    hdr.fds[i].inum = 0;
+    hdr.fds[i].off = 0;
+    hdr.fds[i].major = 0;
+    hdr.fds[i].pipe_id = -1;
+  }
+
+  for(i = 0; i < NOFILE; i++){
     if(p->ofile[i] == 0){
-      hdr.fds[i].type = FD_NONE;
       continue;
     }
     
@@ -752,25 +752,58 @@ checkpoint_proc(struct proc *p, char *path)
       }
       hdr.num_fds++;
     } else if(f->type == FD_PIPE){
-      // For pipes: we only support pipes where both ends are in the same process
-      // Check if both ends are open in this process
-      int pipe_found = 0;
-      for(int j = 0; j < NOFILE; j++){
-        if(i != j && p->ofile[j] != 0 && p->ofile[j]->type == FD_PIPE && 
-           p->ofile[j]->pipe == f->pipe){
-          pipe_found = 1;
+      int pipe_id = -1;
+      for(j = 0; j < npipes; j++){
+        if(pipes[j] == f->pipe){
+          pipe_id = j;
           break;
         }
       }
-      if(!pipe_found){
-        // Pipe with only one end in this process - cannot checkpoint
+
+      if(pipe_id == -1){
+        if(npipes >= NOFILE){
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        pipe_id = npipes++;
+        pipes[pipe_id] = f->pipe;
+        pipe_nrefs[pipe_id] = 0;
+        pipe_read_refs[pipe_id] = 0;
+        pipe_write_refs[pipe_id] = 0;
+      }
+      pipe_nrefs[pipe_id]++;
+      if(f->readable && !f->writable)
+        pipe_read_refs[pipe_id]++;
+      else if(!f->readable && f->writable)
+        pipe_write_refs[pipe_id]++;
+      else {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      hdr.fds[i].pipe_id = pipe_id;
+
+      // Only support self-contained pipe pairs with exactly two FDs.
+      // Reject cross-process or duplicated-end pipe graphs.
+      if(pipe_nrefs[pipe_id] > 2){
         iunlockput(ip);
         end_op();
         return -1;
       }
       hdr.num_fds++;
-      // Mark as pipe for restore, but we'll need to recreate pipes
-      hdr.fds[i].type = FD_PIPE;
+    } else {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+
+  for(i = 0; i < npipes; i++){
+    if(pipe_nrefs[i] != 2 || pipe_read_refs[i] != 1 || pipe_write_refs[i] != 1){
+      iunlockput(ip);
+      end_op();
+      return -1;
     }
   }
 
@@ -807,10 +840,11 @@ restore_proc(char *path)
   struct inode *ip;
   struct ckpt_header hdr;
   struct proc *np;
+  struct file *pipe_read, *pipe_write;
+  int fda, fdb;
   uint off = 0;
   int pid;
-  int i;
-
+  int i, j;
   begin_op();
   if((ip = namei(path)) == 0){
     end_op();
@@ -818,146 +852,112 @@ restore_proc(char *path)
   }
   ilock(ip);
 
-  // Read and validate header (M2)
   if(readi(ip, 0, (uint64)&hdr, off, sizeof(hdr)) != sizeof(hdr) ||
-     hdr.magic != CKPT_MAGIC){
+     hdr.magic != CKPT_MAGIC ||
+     hdr.version != CKPT_VERSION){
     iunlockput(ip);
     end_op();
     return -1;
   }
   off += sizeof(hdr);
 
-  // Allocate new process (M3)
   if((np = allocproc()) == 0){
     iunlockput(ip);
     end_op();
     return -1;
   }
 
-  // Allocate address space (M3)
-  if(uvmalloc(np->pagetable, 0, hdr.sz, PTE_W|PTE_R|PTE_X|PTE_U) == 0){
-    freeproc(np);
-    release(&np->lock);
-    iunlockput(ip);
-    end_op();
-    return -1;
-  }
+  if(uvmalloc(np->pagetable, 0, hdr.sz, PTE_W|PTE_R|PTE_X|PTE_U) == 0)
+    goto bad;
   np->sz = hdr.sz;
 
-  // Restore pages (M3)
-  if(restore_addr_space(np->pagetable, np->sz, ip, off) < 0){
-    freeproc(np);
-    release(&np->lock);
-    iunlockput(ip);
-    end_op();
-    return -1;
-  }
+  // Drop np->lock while doing disk I/O and lock-heavy reconstruction.
+  release(&np->lock);
 
-  // Restore FD table (M4)
-  for(i = 0; i < NOFILE && i < hdr.num_fds; i++){
-    if(hdr.fds[i].type == FD_NONE){
-      np->ofile[i] = 0;
+  if(restore_addr_space(np->pagetable, np->sz, ip, off) < 0)
+    goto bad;
+
+  for(i = 0; i < NOFILE; i++){
+    np->ofile[i] = 0;
+    if(hdr.fds[i].type == FD_NONE || hdr.fds[i].type == FD_PIPE)
       continue;
-    }
 
     struct file *f = filealloc();
-    if(f == 0){
-      freeproc(np);
-      release(&np->lock);
-      iunlockput(ip);
-      end_op();
-      return -1;
-    }
+    struct inode *inum_ip;
+    if(f == 0)
+      goto bad;
 
     np->ofile[i] = f;
     f->readable = hdr.fds[i].readable;
     f->writable = hdr.fds[i].writable;
 
-    if(hdr.fds[i].type == FD_INODE || hdr.fds[i].type == FD_DEVICE){
-      f->type = hdr.fds[i].type;
-      struct inode *inum_ip = iget_by_inum(hdr.fds[i].inum);
-      if(inum_ip == 0){
-        fileclose(f);
-        np->ofile[i] = 0;
-        freeproc(np);
-        release(&np->lock);
-        iunlockput(ip);
-        end_op();
-        return -1;
-      }
-      ilock(inum_ip);
-      f->ip = inum_ip;
-      f->off = hdr.fds[i].off;
-      f->major = hdr.fds[i].major;
-      iunlock(inum_ip);
-    } else if(hdr.fds[i].type == FD_PIPE){
-      // For pipes, we need to find another FD with the same pipe index
-      // and create new pipes for both
-      f->type = FD_PIPE;
-      // We'll handle pipe restoration by looking for matching pipes
-      // For now, set pipe to null - will be filled when we find the matching FD
-      f->pipe = 0;
-    }
+    if(hdr.fds[i].type != FD_INODE && hdr.fds[i].type != FD_DEVICE)
+      goto bad;
+    f->type = hdr.fds[i].type;
+
+    inum_ip = iget_by_inum(hdr.fds[i].inum);
+    if(inum_ip == 0)
+      goto bad;
+    f->ip = inum_ip;
+    f->off = hdr.fds[i].off;
+    f->major = hdr.fds[i].major;
   }
 
-  // Restore cwd (M4)
-  if(hdr.cwd_inum != 0){
-    struct inode *cwd_ip = iget_by_inum(hdr.cwd_inum);
-    if(cwd_ip != 0){
-      ilock(cwd_ip);
-      np->cwd = cwd_ip;
-      iunlock(cwd_ip);
-    } else {
-      // If we can't find the cwd inode, default to root
-      cwd_ip = iget_by_inum(ROOTINO);
-      if(cwd_ip != 0){
-        ilock(cwd_ip);
-        np->cwd = cwd_ip;
-        iunlock(cwd_ip);
-      }
-    }
-  }
+  np->cwd = 0;
+  if(hdr.cwd_inum != 0)
+    np->cwd = iget_by_inum(hdr.cwd_inum);
+  if(np->cwd == 0)
+    np->cwd = iget_by_inum(ROOTINO);
+  if(np->cwd == 0)
+    goto bad;
 
-  // Handle pipe FD pairs (M4)
   for(i = 0; i < NOFILE; i++){
-    if(np->ofile[i] != 0 && np->ofile[i]->type == FD_PIPE && np->ofile[i]->pipe == 0){
-      // Find the matching pipe FD
-      struct file *f1 = 0, *f2 = 0;
-      int j;
-      
-      // Look for another pipe FD that hasn't been matched yet
-      for(j = i + 1; j < NOFILE; j++){
-        if(np->ofile[j] != 0 && np->ofile[j]->type == FD_PIPE && np->ofile[j]->pipe == 0){
-          // Found a pair - create a new pipe for both
-          if(pipealloc(&f1, &f2) < 0){
-            freeproc(np);
-            release(&np->lock);
-            iunlockput(ip);
-            end_op();
-            return -1;
-          }
-          
-          // Restore original properties
-          f1->readable = np->ofile[i]->readable;
-          f1->writable = np->ofile[i]->writable;
-          f2->readable = np->ofile[j]->readable;
-          f2->writable = np->ofile[j]->writable;
-          
-          fileclose(np->ofile[i]);
-          fileclose(np->ofile[j]);
-          
-          np->ofile[i] = f1;
-          np->ofile[j] = f2;
-          break;
-        }
+    if(hdr.fds[i].type != FD_PIPE || np->ofile[i] != 0)
+      continue;
+
+    fda = i;
+    fdb = -1;
+    for(j = i + 1; j < NOFILE; j++){
+      if(hdr.fds[j].type == FD_PIPE &&
+         hdr.fds[j].pipe_id == hdr.fds[i].pipe_id &&
+         np->ofile[j] == 0){
+        fdb = j;
+        break;
       }
+    }
+    if(fdb < 0 || pipealloc(&pipe_read, &pipe_write) < 0)
+      goto bad;
+
+    if(hdr.fds[fda].readable && !hdr.fds[fda].writable){
+      np->ofile[fda] = pipe_read;
+    } else if(!hdr.fds[fda].readable && hdr.fds[fda].writable){
+      np->ofile[fda] = pipe_write;
+    } else {
+      fileclose(pipe_read);
+      fileclose(pipe_write);
+      goto bad;
+    }
+
+    if(hdr.fds[fdb].readable && !hdr.fds[fdb].writable){
+      np->ofile[fdb] = pipe_read;
+    } else if(!hdr.fds[fdb].readable && hdr.fds[fdb].writable){
+      np->ofile[fdb] = pipe_write;
+    } else {
+      fileclose(pipe_read);
+      fileclose(pipe_write);
+      np->ofile[fda] = 0;
+      goto bad;
     }
   }
 
-  // Restore registers and program counter (M3)
+  acquire(&np->lock);
   memmove(np->trapframe, &hdr.tf, sizeof(struct trapframe));
+  np->trapframe->a0 = 1;
 
-  safestrcpy(np->name, "restored", sizeof(np->name));
+  safestrcpy(np->name, hdr.name, sizeof(np->name));
+  acquire(&wait_lock);
+  np->parent = initproc;
+  release(&wait_lock);
   np->state = RUNNABLE;
   pid = np->pid;
   release(&np->lock);
@@ -965,4 +965,24 @@ restore_proc(char *path)
   iunlockput(ip);
   end_op();
   return pid;
+
+bad:
+  if(np){
+    for(i = 0; i < NOFILE; i++){
+      if(np->ofile[i]){
+        fileclose(np->ofile[i]);
+        np->ofile[i] = 0;
+      }
+    }
+    if(np->cwd){
+      iput(np->cwd);
+      np->cwd = 0;
+    }
+    acquire(&np->lock);
+    freeproc(np);
+    release(&np->lock);
+  }
+  iunlockput(ip);
+  end_op();
+  return -1;
 }

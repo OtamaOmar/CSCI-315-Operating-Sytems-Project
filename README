@@ -56,8 +56,45 @@ System calls
 Rules
 - pid == 0 means the current process.
 - path must be non-empty and no longer than MAXPATH.
-- checkpoint returns 0 on success, -1 on error.
+- This implementation supports checkpointing only the calling process
+  (pid must be 0 or getpid()).
+- checkpoint returns:
+  - 0 in the original process when checkpoint is taken.
+  - 1 in the restored process when execution resumes after checkpoint.
+  - -1 on error.
 - restore returns the new pid on success, -1 on error.
 
-Status
-- Syscall plumbing is in place. Core checkpoint/restore logic will be implemented in later phases.
+Checkpointed state (xv6 scope)
+- User address space contents and size.
+- Trapframe (registers and resume PC), with checkpoint return value adjusted
+  for restored execution path.
+- Open file descriptors for inode/device files, including offsets.
+- Current working directory.
+- Process name.
+- Self-contained pipes where both ends are owned by the checkpointed process.
+
+Pipe policy
+- Supported: both ends of the same pipe in one process.
+- Rejected: cross-process pipes or duplicated-end pipe graphs.
+
+Restore behavior
+- Restore creates a new runnable process.
+- Restored process parent is set to init (no tree restore).
+
+Serialization format
+- Header contains a magic value and version field.
+- Per-page presence markers are used so sparse user mappings are restored
+  correctly.
+
+Verification
+- Build: make
+- Run in xv6 shell:
+  - ckptest
+  - checkpointtest
+
+`ckptest` validates:
+- memory/flow restoration after checkpoint->restore
+- FD offset restoration semantics
+- self-contained pipe restoration usability
+- cross-process pipe checkpoint rejection
+- cwd restoration

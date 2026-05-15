@@ -119,21 +119,7 @@ sys_checkpoint(void)
   if(n <= 1)
     return -1;
 
-  extern struct proc proc[];
-  struct proc *pp = 0;
-  for(struct proc *tp = proc; tp < &proc[NPROC]; tp++){
-    acquire(&tp->lock);
-    if(tp->pid == pid){
-      pp = tp;
-      release(&tp->lock);
-      break;
-    }
-    release(&tp->lock);
-  }
-  if(pp == 0)
-    return -1;
-
-  return checkpoint_proc(pp, path);
+  return checkpoint_proc(p, path);
 }
 
 uint64
@@ -141,7 +127,6 @@ sys_restore(void)
 {
   int n;
   char path[MAXPATH];
-  struct proc *p = myproc();
 
   n = argstr(0, path, MAXPATH);
   if(n <= 1)

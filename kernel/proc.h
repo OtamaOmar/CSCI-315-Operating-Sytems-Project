@@ -79,8 +79,6 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
-#define CKPT_MAX_PAGES 32
-
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
@@ -106,17 +104,12 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
 
-  int checkpoint_valid;
-  uint64 checkpoint_sz;
-  struct trapframe checkpoint_tf;
-  char *checkpoint_pages[CKPT_MAX_PAGES];
-  int checkpoint_npages;
-
   char name[16];               // Process name (debugging)
 };
 
 // Checkpoint/Restore file format (M2)
 #define CKPT_MAGIC 0x43484B50
+#define CKPT_VERSION 1
 
 // File descriptor info saved in checkpoint
 struct ckpt_fd {
@@ -126,13 +119,16 @@ struct ckpt_fd {
   uint inum;       // inode number (for FD_INODE)
   uint off;        // file offset (for FD_INODE)
   short major;     // major device number (for FD_DEVICE)
+  int pipe_id;     // pairing id for FD_PIPE
 };
 
 struct ckpt_header {
   uint   magic;
+  uint   version;
   int    pid;
   uint64 sz;
   struct trapframe tf;
+  char   name[16];
   
   // FD/CWD info (phase 1)
   int    num_fds;
