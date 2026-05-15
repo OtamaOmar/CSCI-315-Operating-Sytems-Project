@@ -167,6 +167,7 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 .PRECIOUS: %.o
 
 UPROGS=\
+	$U/_test_scenario\
 	$U/_test_full\
 	$U/_test_pipe\
 	$U/_test_fd\
