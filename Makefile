@@ -167,6 +167,12 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 .PRECIOUS: %.o
 
 UPROGS=\
+	$U/_test_full\
+	$U/_test_pipe\
+	$U/_test_fd\
+	$U/_test_memory\
+	$U/_test_serial\
+	$U/_test_syscall\
 	$U/_cat\
 	$U/_echo\
 	$U/_forktest\
