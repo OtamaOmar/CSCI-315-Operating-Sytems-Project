@@ -118,9 +118,24 @@ struct proc {
 // Checkpoint/Restore file format (M2)
 #define CKPT_MAGIC 0x43484B50
 
+// File descriptor info saved in checkpoint
+struct ckpt_fd {
+  int type;        // FD_NONE, FD_PIPE, FD_INODE, FD_DEVICE
+  char readable;
+  char writable;
+  uint inum;       // inode number (for FD_INODE)
+  uint off;        // file offset (for FD_INODE)
+  short major;     // major device number (for FD_DEVICE)
+};
+
 struct ckpt_header {
   uint   magic;
   int    pid;
   uint64 sz;
   struct trapframe tf;
+  
+  // FD/CWD info (phase 1)
+  int    num_fds;
+  uint   cwd_inum;           // cwd inode number (0 if no cwd)
+  struct ckpt_fd fds[NOFILE]; // file descriptor table
 };

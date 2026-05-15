@@ -715,6 +715,7 @@ checkpoint_proc(struct proc *p, char *path)
   struct inode *ip;
   struct ckpt_header hdr;
   uint off = 0;
+  int i;
 
   begin_op();
   ip = create(path, T_FILE, 0, 0);
@@ -728,6 +729,57 @@ checkpoint_proc(struct proc *p, char *path)
   hdr.pid   = p->pid;
   hdr.sz    = p->sz;
   memmove(&hdr.tf, p->trapframe, sizeof(struct trapframe));
+
+  // Capture FD table (M4 - FD/cwd/pipes)
+  hdr.num_fds = 0;
+  for(i = 0; i < NOFILE; i++){
+    if(p->ofile[i] == 0){
+      hdr.fds[i].type = FD_NONE;
+      continue;
+    }
+    
+    struct file *f = p->ofile[i];
+    hdr.fds[i].type = f->type;
+    hdr.fds[i].readable = f->readable;
+    hdr.fds[i].writable = f->writable;
+
+    if(f->type == FD_INODE || f->type == FD_DEVICE){
+      hdr.fds[i].inum = f->ip->inum;
+      if(f->type == FD_INODE){
+        hdr.fds[i].off = f->off;
+      } else if(f->type == FD_DEVICE){
+        hdr.fds[i].major = f->major;
+      }
+      hdr.num_fds++;
+    } else if(f->type == FD_PIPE){
+      // For pipes: we only support pipes where both ends are in the same process
+      // Check if both ends are open in this process
+      int pipe_found = 0;
+      for(int j = 0; j < NOFILE; j++){
+        if(i != j && p->ofile[j] != 0 && p->ofile[j]->type == FD_PIPE && 
+           p->ofile[j]->pipe == f->pipe){
+          pipe_found = 1;
+          break;
+        }
+      }
+      if(!pipe_found){
+        // Pipe with only one end in this process - cannot checkpoint
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      hdr.num_fds++;
+      // Mark as pipe for restore, but we'll need to recreate pipes
+      hdr.fds[i].type = FD_PIPE;
+    }
+  }
+
+  // Capture cwd (M4 - cwd/pipes)
+  if(p->cwd != 0){
+    hdr.cwd_inum = p->cwd->inum;
+  } else {
+    hdr.cwd_inum = 0;
+  }
 
   if(writei(ip, 0, (uint64)&hdr, off, sizeof(hdr)) != sizeof(hdr)){
     iunlockput(ip);
@@ -748,7 +800,7 @@ checkpoint_proc(struct proc *p, char *path)
   return 0;
 }
 
-// Restore process from checkpoint file (M2 + M3)
+// Restore process from checkpoint file (M2 + M3 + M4)
 int
 restore_proc(char *path)
 {
@@ -757,6 +809,7 @@ restore_proc(char *path)
   struct proc *np;
   uint off = 0;
   int pid;
+  int i;
 
   begin_op();
   if((ip = namei(path)) == 0){
@@ -798,6 +851,107 @@ restore_proc(char *path)
     iunlockput(ip);
     end_op();
     return -1;
+  }
+
+  // Restore FD table (M4)
+  for(i = 0; i < NOFILE && i < hdr.num_fds; i++){
+    if(hdr.fds[i].type == FD_NONE){
+      np->ofile[i] = 0;
+      continue;
+    }
+
+    struct file *f = filealloc();
+    if(f == 0){
+      freeproc(np);
+      release(&np->lock);
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+
+    np->ofile[i] = f;
+    f->readable = hdr.fds[i].readable;
+    f->writable = hdr.fds[i].writable;
+
+    if(hdr.fds[i].type == FD_INODE || hdr.fds[i].type == FD_DEVICE){
+      f->type = hdr.fds[i].type;
+      struct inode *inum_ip = iget_by_inum(hdr.fds[i].inum);
+      if(inum_ip == 0){
+        fileclose(f);
+        np->ofile[i] = 0;
+        freeproc(np);
+        release(&np->lock);
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      ilock(inum_ip);
+      f->ip = inum_ip;
+      f->off = hdr.fds[i].off;
+      f->major = hdr.fds[i].major;
+      iunlock(inum_ip);
+    } else if(hdr.fds[i].type == FD_PIPE){
+      // For pipes, we need to find another FD with the same pipe index
+      // and create new pipes for both
+      f->type = FD_PIPE;
+      // We'll handle pipe restoration by looking for matching pipes
+      // For now, set pipe to null - will be filled when we find the matching FD
+      f->pipe = 0;
+    }
+  }
+
+  // Restore cwd (M4)
+  if(hdr.cwd_inum != 0){
+    struct inode *cwd_ip = iget_by_inum(hdr.cwd_inum);
+    if(cwd_ip != 0){
+      ilock(cwd_ip);
+      np->cwd = cwd_ip;
+      iunlock(cwd_ip);
+    } else {
+      // If we can't find the cwd inode, default to root
+      cwd_ip = iget_by_inum(ROOTINO);
+      if(cwd_ip != 0){
+        ilock(cwd_ip);
+        np->cwd = cwd_ip;
+        iunlock(cwd_ip);
+      }
+    }
+  }
+
+  // Handle pipe FD pairs (M4)
+  for(i = 0; i < NOFILE; i++){
+    if(np->ofile[i] != 0 && np->ofile[i]->type == FD_PIPE && np->ofile[i]->pipe == 0){
+      // Find the matching pipe FD
+      struct file *f1 = 0, *f2 = 0;
+      int j;
+      
+      // Look for another pipe FD that hasn't been matched yet
+      for(j = i + 1; j < NOFILE; j++){
+        if(np->ofile[j] != 0 && np->ofile[j]->type == FD_PIPE && np->ofile[j]->pipe == 0){
+          // Found a pair - create a new pipe for both
+          if(pipealloc(&f1, &f2) < 0){
+            freeproc(np);
+            release(&np->lock);
+            iunlockput(ip);
+            end_op();
+            return -1;
+          }
+          
+          // Restore original properties
+          f1->readable = np->ofile[i]->readable;
+          f1->writable = np->ofile[i]->writable;
+          f2->readable = np->ofile[j]->readable;
+          f2->writable = np->ofile[j]->writable;
+          
+          fileclose(np->ofile[i]);
+          fileclose(np->ofile[j]);
+          
+          np->ofile[i] = f1;
+          np->ofile[j] = f2;
+          break;
+        }
+      }
+    }
   }
 
   // Restore registers and program counter (M3)

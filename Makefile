@@ -187,6 +187,7 @@ UPROGS=\
 	$U/_forphan\
 	$U/_dorphan\
 	$U/_checkpointtest\
+	$U/_ckptest\
 
 
 

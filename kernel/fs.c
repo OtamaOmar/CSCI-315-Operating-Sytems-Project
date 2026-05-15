@@ -288,6 +288,15 @@ idup(struct inode *ip)
   return ip;
 }
 
+// Get inode by inode number from device.
+// Used by checkpoint/restore to restore cwd and file inodes.
+// Returns the inode with ref count incremented.
+struct inode*
+iget_by_inum(uint inum)
+{
+  return iget(ROOTDEV, inum);
+}
+
 // Lock the given inode.
 // Reads the inode from disk if necessary.
 void

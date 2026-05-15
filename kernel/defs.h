@@ -41,6 +41,7 @@ int             dirlink(struct inode*, char*, uint);
 struct inode*   dirlookup(struct inode*, char*, uint*);
 struct inode*   ialloc(uint, short);
 struct inode*   idup(struct inode*);
+struct inode*   iget_by_inum(uint);  // Get inode by number (for restore)
 void            iinit();
 void            ilock(struct inode*);
 void            iput(struct inode*);
