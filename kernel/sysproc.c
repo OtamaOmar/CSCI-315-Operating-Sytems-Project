@@ -120,20 +120,20 @@ sys_checkpoint(void)
     return -1;
 
   extern struct proc proc[];
-  struct proc *p = 0;
+  struct proc *pp = 0;
   for(struct proc *tp = proc; tp < &proc[NPROC]; tp++){
     acquire(&tp->lock);
     if(tp->pid == pid){
-      p = tp;
+      pp = tp;
       release(&tp->lock);
       break;
     }
     release(&tp->lock);
   }
-  if(p == 0)
+  if(pp == 0)
     return -1;
 
-  return checkpoint_proc(p, path);
+  return checkpoint_proc(pp, path);
 }
 
 uint64
@@ -148,10 +148,4 @@ sys_restore(void)
     return -1;
 
   return restore_proc(path);
-}
-
-  *(p->trapframe) = p->checkpoint_tf;
-
-  printf("process restored from %s\n", path);
-  return 1;
 }
