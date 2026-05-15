@@ -537,3 +537,43 @@ pgpte(pagetable_t pagetable, uint64 va) {
   return walk(pagetable, va, 0);
 }
 #endif
+
+// Walk page table and write all user pages to checkpoint file (M3)
+int
+checkpoint_addr_space(pagetable_t pagetable, uint64 sz, struct inode *ip, uint off)
+{
+  pte_t *pte;
+  uint64 pa, i;
+
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walk(pagetable, i, 0)) == 0)
+      continue;
+    if((*pte & PTE_V) == 0)
+      continue;
+    pa = PTE2PA(*pte);
+    if(writei(ip, 0, pa, off, PGSIZE) != PGSIZE)
+      return -1;
+    off += PGSIZE;
+  }
+  return 0;
+}
+
+// Read pages from checkpoint file and load into process address space (M3)
+int
+restore_addr_space(pagetable_t pagetable, uint64 sz, struct inode *ip, uint off)
+{
+  pte_t *pte;
+  uint64 pa, i;
+
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walk(pagetable, i, 0)) == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+      return -1;
+    pa = PTE2PA(*pte);
+    if(readi(ip, 0, pa, off, PGSIZE) != PGSIZE)
+      return -1;
+    off += PGSIZE;
+  }
+  return 0;
+}

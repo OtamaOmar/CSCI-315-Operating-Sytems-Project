@@ -5,6 +5,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "stat.h"
 
 struct cpu cpus[NCPU];
 
@@ -684,4 +686,111 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// --- Checkpoint/Restore (M2 + M3) ---
+
+// Save process memory pages to checkpoint file (M3)
+int
+checkpoint_proc(struct proc *p, char *path)
+{
+  struct inode *ip;
+  struct ckpt_header hdr;
+  uint off = 0;
+
+  begin_op();
+  ip = create(path, T_FILE, 0, 0);
+  if(ip == 0){
+    end_op();
+    return -1;
+  }
+
+  // Build and write header (M2)
+  hdr.magic = CKPT_MAGIC;
+  hdr.pid   = p->pid;
+  hdr.sz    = p->sz;
+  memmove(&hdr.tf, p->trapframe, sizeof(struct trapframe));
+
+  if(writei(ip, 0, (uint64)&hdr, off, sizeof(hdr)) != sizeof(hdr)){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  off += sizeof(hdr);
+
+  // Write user pages (M3)
+  if(checkpoint_addr_space(p->pagetable, p->sz, ip, off) < 0){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
+  return 0;
+}
+
+// Restore process from checkpoint file (M2 + M3)
+int
+restore_proc(char *path)
+{
+  struct inode *ip;
+  struct ckpt_header hdr;
+  struct proc *np;
+  uint off = 0;
+  int pid;
+
+  begin_op();
+  if((ip = namei(path)) == 0){
+    end_op();
+    return -1;
+  }
+  ilock(ip);
+
+  // Read and validate header (M2)
+  if(readi(ip, 0, (uint64)&hdr, off, sizeof(hdr)) != sizeof(hdr) ||
+     hdr.magic != CKPT_MAGIC){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  off += sizeof(hdr);
+
+  // Allocate new process (M3)
+  if((np = allocproc()) == 0){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  // Allocate address space (M3)
+  if(uvmalloc(np->pagetable, 0, hdr.sz, PTE_W|PTE_R|PTE_X|PTE_U) == 0){
+    freeproc(np);
+    release(&np->lock);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  np->sz = hdr.sz;
+
+  // Restore pages (M3)
+  if(restore_addr_space(np->pagetable, np->sz, ip, off) < 0){
+    freeproc(np);
+    release(&np->lock);
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  // Restore registers and program counter (M3)
+  memmove(np->trapframe, &hdr.tf, sizeof(struct trapframe));
+
+  safestrcpy(np->name, "restored", sizeof(np->name));
+  np->state = RUNNABLE;
+  pid = np->pid;
+  release(&np->lock);
+
+  iunlockput(ip);
+  end_op();
+  return pid;
 }

@@ -105,3 +105,13 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 };
+
+// Checkpoint/Restore file format (M2)
+#define CKPT_MAGIC 0x43484B50
+
+struct ckpt_header {
+  uint   magic;
+  int    pid;
+  uint64 sz;
+  struct trapframe tf;
+};

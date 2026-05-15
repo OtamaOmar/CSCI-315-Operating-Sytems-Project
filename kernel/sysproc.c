@@ -52,9 +52,6 @@ sys_sbrk(void)
       return -1;
     }
   } else {
-    // Lazily allocate memory for this process: increase its memory
-    // size but don't allocate memory. If the processes uses the
-    // memory, vmfault() will allocate it.
     if(addr + n < addr)
       return -1;
     myproc()->sz += n;
@@ -93,8 +90,6 @@ sys_kill(void)
   return kkill(pid);
 }
 
-// return how many clock tick interrupts have occurred
-// since start.
 uint64
 sys_uptime(void)
 {
@@ -122,7 +117,21 @@ sys_checkpoint(void)
   if(n <= 1)
     return -1;
 
-  return -1;
+  extern struct proc proc[];
+  struct proc *p = 0;
+  for(struct proc *tp = proc; tp < &proc[NPROC]; tp++){
+    acquire(&tp->lock);
+    if(tp->pid == pid){
+      p = tp;
+      release(&tp->lock);
+      break;
+    }
+    release(&tp->lock);
+  }
+  if(p == 0)
+    return -1;
+
+  return checkpoint_proc(p, path);
 }
 
 uint64
@@ -135,5 +144,5 @@ sys_restore(void)
   if(n <= 1)
     return -1;
 
-  return -1;
+  return restore_proc(path);
 }

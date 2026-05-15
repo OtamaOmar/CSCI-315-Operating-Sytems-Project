@@ -35,6 +35,7 @@ int             filestat(struct file*, uint64 addr);
 int             filewrite(struct file*, uint64, int n);
 
 // fs.c
+struct inode*   create(char*, short, short, short);
 void            fsinit(int);
 int             dirlink(struct inode*, char*, uint);
 struct inode*   dirlookup(struct inode*, char*, uint*);
@@ -78,6 +79,8 @@ void            panic(char*) __attribute__((noreturn));
 void            printfinit(void);
 
 // proc.c
+int             restore_proc(char*);
+int             checkpoint_proc(struct proc*, char*);
 int             cpuid(void);
 void            kexit(int);
 int             kfork(void);
@@ -151,6 +154,8 @@ void            uartputc_sync(int);
 int             uartgetc(void);
 
 // vm.c
+int             restore_addr_space(pagetable_t, uint64, struct inode*, uint);
+int             checkpoint_addr_space(pagetable_t, uint64, struct inode*, uint);
 void            kvminit(void);
 void            kvminithart(void);
 void            kvmmap(pagetable_t, uint64, uint64, uint64, int);
