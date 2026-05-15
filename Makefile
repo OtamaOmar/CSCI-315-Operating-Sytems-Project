@@ -186,8 +186,7 @@ UPROGS=\
 	$U/_logstress\
 	$U/_forphan\
 	$U/_dorphan\
-	$U/_checkpointtest\
-	$U/_ckptest\
+
 
 
 
