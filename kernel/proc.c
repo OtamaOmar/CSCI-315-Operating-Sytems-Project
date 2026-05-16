@@ -757,15 +757,15 @@ restore_proc(char *path)
   off += sizeof(hdr);
 
   // Allocate new process (M3)
-  if((np = allocproc()) == 0){
-    iunlockput(ip);
+  if((np = allocproc()) == 0){ // Reserve a spot for the new process — if no spot is available, we can't restore
+    iunlockput(ip);//unlock checkpoint file
     end_op();
-    return -1;
+    return -1;// whoever called restore it failed
   }
 
-  // Allocate address space (M3)
+  // Create empty memory space for the new process (M3)
   if(uvmalloc(np->pagetable, 0, hdr.sz, PTE_W|PTE_R|PTE_X|PTE_U) == 0){
-    freeproc(np);
+    freeproc(np); //Destroy the new process we just created
     release(&np->lock);
     iunlockput(ip);
     end_op();
@@ -783,9 +783,10 @@ restore_proc(char *path)
   }
 
   // Restore registers and program counter (M3)
+  //"Move data, in saved trapframe in the header, into the new process's trapframe, with the size of the full trapframe."
   memmove(np->trapframe, &hdr.tf, sizeof(struct trapframe));
 
-  safestrcpy(np->name, "restored", sizeof(np->name));
+  safestrcpy(np->name, "restored", sizeof(np->name));//Copy
   np->state = RUNNABLE;
   pid = np->pid;
   release(&np->lock);
