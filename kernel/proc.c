@@ -691,14 +691,17 @@ procdump(void)
 // --- Checkpoint/Restore (M2 + M3) ---
 
 // Save process memory pages to checkpoint file (M3)
-int
+
+
+int       //p is the process, path is where we save it.
 checkpoint_proc(struct proc *p, char *path)
 {
   struct inode *ip;
   struct ckpt_header hdr;
   uint off = 0;
 
-  begin_op();
+  begin_op(); 
+  // Create the checkpoint file at path.
   ip = create(path, T_FILE, 0, 0);
   if(ip == 0){
     end_op();
@@ -719,6 +722,8 @@ checkpoint_proc(struct proc *p, char *path)
   off += sizeof(hdr);
 
   // Write user pages (M3)
+
+  // Save all user memory of process p into file ip starting after the header.
   if(checkpoint_addr_space(p->pagetable, p->sz, ip, off) < 0){
     iunlockput(ip);
     end_op();
@@ -741,11 +746,11 @@ restore_proc(char *path)
   int pid;
 
   begin_op();
-  if((ip = namei(path)) == 0){
+  if((ip = namei(path)) == 0){// Look for the checkpoint file
     end_op();
     return -1;
   }
-  ilock(ip);
+  ilock(ip);// Lock ip so restore can read safely.
 
   // Read and validate header (M2)
   if(readi(ip, 0, (uint64)&hdr, off, sizeof(hdr)) != sizeof(hdr) ||
@@ -783,7 +788,7 @@ restore_proc(char *path)
   }
 
   // Restore registers and program counter (M3)
-  //"Move data, in saved trapframe in the header, into the new process's trapframe, with the size of the full trapframe."
+// Copy the saved CPU state/registers back to the restored process.
   memmove(np->trapframe, &hdr.tf, sizeof(struct trapframe));
 
   safestrcpy(np->name, "restored", sizeof(np->name));//Copy
