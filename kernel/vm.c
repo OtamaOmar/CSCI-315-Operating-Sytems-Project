@@ -542,16 +542,18 @@ pgpte(pagetable_t pagetable, uint64 va) {
 int
 checkpoint_addr_space(pagetable_t pagetable, uint64 sz, struct inode *ip, uint off)
 {
-  pte_t *pte;
-  uint64 pa, i;
+  pte_t *pte;//pointer to a memory map
+  uint64 pa, i; //the real location in RAM
 
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(pagetable, i, 0)) == 0)
+  for(i = 0; i < sz; i += PGSIZE){//Loop through every page in the process memory
+    if((pte = walk(pagetable, i, 0)) == 0)//Find this page in the page table
       continue;
-    if((*pte & PTE_V) == 0)
+    if((*pte & PTE_V) == 0) //If this page is not valid/active, skip it
       continue;
-    pa = PTE2PA(*pte);
-    if(writei(ip, 0, pa, off, PGSIZE) != PGSIZE)
+    pa = PTE2PA(*pte); //Get the actual physical memory address of this page
+
+    //Write this page to the checkpoint file — if it fails return error
+    if(writei(ip, 0, pa, off, PGSIZE) != PGSIZE) 
       return -1;
     off += PGSIZE;
   }
@@ -559,7 +561,7 @@ checkpoint_addr_space(pagetable_t pagetable, uint64 sz, struct inode *ip, uint o
 }
 
 // Read pages from checkpoint file and load into process address space (M3)
-int
+int   //The memory map of the new process...The size of the process...The checkpoint file on disk
 restore_addr_space(pagetable_t pagetable, uint64 sz, struct inode *ip, uint off)
 {
   pte_t *pte;
